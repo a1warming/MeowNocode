@@ -1,14 +1,18 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ArrowUpRight } from 'lucide-react';
+import { Mic, Pause, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/context/ThemeContext';
 import { useSettings } from '@/context/SettingsContext';
+import { EMOJI_CATEGORIES, loadEmojiItems, buildEmojiUrl } from '@/config/emoji';
+import { getEmojiCategory } from '@/config/emoji';
+import fileStorageService from '@/lib/fileStorageService';
+import AudioWaveform from '@/components/AudioWaveform';
 
 const MemoEditor = ({
   value = '',
   onChange,
-  placeholder = '现在的想法是……',
+  placeholder = 'Write something...',
   onSubmit,
   disabled = false,
   maxLength,
@@ -25,6 +29,10 @@ const MemoEditor = ({
   // optional focus callbacks
   onFocus,
   onBlur,
+  // audio: callback to attach a recorded audio clip to memo
+  onAddAudioClip,
+  audioClips = [],
+  onRemoveAudioClip,
 }) => {
   // theme & settings
   const { themeColor } = useTheme();
@@ -33,6 +41,7 @@ const MemoEditor = ({
 
   // local states / refs
   const textareaRef = useRef(null);
+  const rootRef = useRef(null);
   const [isFocused, setIsFocused] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [compositionValue, setCompositionValue] = useState('');
@@ -40,32 +49,47 @@ const MemoEditor = ({
   const [showBacklinkPicker, setShowBacklinkPicker] = useState(false);
   const [pickerPos, setPickerPos] = useState(null);
   const backlinkBtnRef = useRef(null);
+  // emoji picker
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [emojiPickerPos, setEmojiPickerPos] = useState(null);
+  const emojiBtnRef = useRef(null);
+  const [activeEmojiCategory, setActiveEmojiCategory] = useState(EMOJI_CATEGORIES[0]?.key || 'bili');
+  const [emojiMap, setEmojiMap] = useState({});
+  const emojiPanelRef = useRef(null); // { categoryKey: [{name, file}] }
+
+  // Audio recording state and waveform
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [hasMicPermission, setHasMicPermission] = useState(false);
+  const [recordStartAt, setRecordStartAt] = useState(null);
+  const [accumulatedMs, setAccumulatedMs] = useState(0);
+
+  const audioCtxRef = useRef(null);
+  const analyserRef = useRef(null);
+  const dataArrayRef = useRef(null);
+  const rafRef = useRef(null);
+  const waveformCanvasRef = useRef(null);
+  const [durationTick, setDurationTick] = useState(0);
+  const editorAudioRefs = useRef({});
+  const [editorPlaying, setEditorPlaying] = useState({});
+  const [editorClipUrls, setEditorClipUrls] = useState({});
 
   // 获取一言或内置句子
   const fetchHitokoto = async () => {
     if (!hitokotoConfig.enabled) {
       // 从内置句子中随机选择
       const builtInSentences = [
-        "生活就像一盒巧克力，你永远不知道下一颗是什么味道。",
-        "岁月不居，时节如流。",
-        "The only way to do great work is to love what you do. - Steve Jobs",
-        "路漫漫其修远兮，吾将上下而求索。",
-        "Stay hungry, stay foolish. - Steve Jobs",
-        "不积跬步，无以至千里；不积小流，无以成江海。",
-        "To be or not to be, that is the question. - Shakespeare",
-        "人生得意须尽欢，莫使金樽空对月。",
-        "The journey of a thousand miles begins with one step. - Lao Tzu",
-        "天行健，君子以自强不息。",
-        "Carpe diem. Seize the day, boys. Make your lives extraordinary. - Dead Poets Society",
-        "海内存知己，天涯若比邻。",
-        "In three words I can sum up everything I've learned about life: it goes on. - Robert Frost",
-        "春风得意马蹄疾，一日看尽长安花。",
-        "The best preparation for tomorrow is doing your best today. - H. Jackson Brown Jr.",
-        "会当凌绝顶，一览众山小。",
-        "Life is what happens when you're busy making other plans. - John Lennon",
-        "落霞与孤鹜齐飞，秋水共长天一色。",
-        "You miss 100% of the shots you don't take. - Wayne Gretzky",
-        "问渠那得清如许？为有源头活水来。"
+        'Stay hungry, stay foolish. - Steve Jobs',
+        'Life is what happens when you\'re busy making other plans. - John Lennon',
+        'The best preparation for tomorrow is doing your best today.',
+        'The journey of a thousand miles begins with one step.',
+        'Carpe diem. Seize the day.',
+        'In three words I can sum up everything I\'ve learned about life: it goes on.',
+        'You miss 100% of the shots you don\'t take.',
+        'Simplicity is the ultimate sophistication.'
       ];
       const randomIndex = Math.floor(Math.random() * builtInSentences.length);
       setHitokoto({
@@ -88,26 +112,14 @@ const MemoEditor = ({
       console.error('获取一言失败:', error);
       // API失败时使用内置句子
       const builtInSentences = [
-        "生活就像一盒巧克力，你永远不知道下一颗是什么味道。",
-        "岁月不居，时节如流。",
-        "The only way to do great work is to love what you do. - Steve Jobs",
-        "路漫漫其修远兮，吾将上下而求索。",
-        "Stay hungry, stay foolish. - Steve Jobs",
-        "不积跬步，无以至千里；不积小流，无以成江海。",
-        "To be or not to be, that is the question. - Shakespeare",
-        "人生得意须尽欢，莫使金樽空对月。",
-        "The journey of a thousand miles begins with one step. - Lao Tzu",
-        "天行健，君子以自强不息。",
-        "Carpe diem. Seize the day, boys. Make your lives extraordinary. - Dead Poets Society",
-        "海内存知己，天涯若比邻。",
-        "In three words I can sum up everything I've learned about life: it goes on. - Robert Frost",
-        "春风得意马蹄疾，一日看尽长安花。",
-        "The best preparation for tomorrow is doing your best today. - H. Jackson Brown Jr.",
-        "会当凌绝顶，一览众山小。",
-        "Life is what happens when you're busy making other plans. - John Lennon",
-        "落霞与孤鹜齐飞，秋水共长天一色。",
-        "You miss 100% of the shots you don't take. - Wayne Gretzky",
-        "问渠那得清如许？为有源头活水来。"
+        'Stay hungry, stay foolish. - Steve Jobs',
+        'Life is what happens when you\'re busy making other plans. - John Lennon',
+        'The best preparation for tomorrow is doing your best today.',
+        'The journey of a thousand miles begins with one step.',
+        'Carpe diem. Seize the day.',
+        'In three words I can sum up everything I\'ve learned about life: it goes on.',
+        'You miss 100% of the shots you don\'t take.',
+        'Simplicity is the ultimate sophistication.'
       ];
       const randomIndex = Math.floor(Math.random() * builtInSentences.length);
       setHitokoto({
@@ -134,7 +146,7 @@ const MemoEditor = ({
     setTimeout(adjustHeight, 0);
   };
 
-  // 处理输入法合成开始
+  // 处理输入法合成开关
   const handleCompositionStart = (e) => {
     setIsComposing(true);
     setCompositionValue(e.target.value);
@@ -165,7 +177,7 @@ const MemoEditor = ({
     }
   };
 
-  // 在光标处插入 spoiler 语法，并将光标定位到 spoiler 内容处
+  // 在光标处插入 spoiler 语法，并将光标定位到 spoiler 内容后
   const insertSpoilerAtCursor = () => {
     const el = textareaRef.current;
     if (!el) return;
@@ -173,13 +185,13 @@ const MemoEditor = ({
     const end = el.selectionEnd ?? value.length;
     const before = value.slice(0, start);
     const after = value.slice(end);
-    // 形如: {% spoiler  %}，光标定位到 spoiler 后的空白处（两空格中间的第一个后）
+    // 形如: {% spoiler  %}，光标定位到 spoiler 后的空白处（两空格中间的第一个后面）
     const snippet = '{% spoiler  %}';
     // 计算插入后光标位置：位于 "{% spoiler " 之后（索引从0开始）
-    const caretOffsetInSnippet = '{% spoiler '.length; // 包含末尾空格，落在内容位置
+    const caretOffsetInSnippet = '{% spoiler '.length; // 包含末尾空格，落在内容位置前
     const newValue = before + snippet + after;
     onChange?.(newValue);
-    // 聚焦并设置选择区域到内容位置
+    // 聚焦并设置选择区域到内容位置前
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -199,6 +211,280 @@ const MemoEditor = ({
     setShowBacklinkPicker(false);
   };
 
+  // Insert arbitrary snippet at cursor position
+  const insertSnippetAtCursor = (snippet, caretOffsetFromStart = snippet.length) => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? value.length;
+    const end = el.selectionEnd ?? value.length;
+    const before = value.slice(0, start);
+    const after = value.slice(end);
+    const newValue = before + snippet + after;
+    onChange?.(newValue);
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        const pos = start + (caretOffsetFromStart ?? snippet.length);
+        try { textareaRef.current.setSelectionRange(pos, pos); } catch {}
+      }
+      adjustHeight();
+    }, 0);
+  };
+
+  const insertEmojiSyntax = (categoryKey, name) => {
+    const snippet = `:${categoryKey}_${name}:`;
+    insertSnippetAtCursor(snippet, snippet.length);
+  };
+
+  // Render inline text with :cat_name: emoji shortcodes as <img> nodes
+  const renderInlineWithEmoji = (text) => {
+    if (!text) return null;
+    const EMOJI_RE = /:([a-z0-9]+)_([a-z0-9_\-]+):/gi;
+    const nodes = [];
+    let lastIndex = 0;
+    let m;
+    let k = 0;
+    while ((m = EMOJI_RE.exec(text)) !== null) {
+      if (m.index > lastIndex) {
+        nodes.push(text.slice(lastIndex, m.index));
+      }
+      const cat = (m[1] || '').toLowerCase();
+      const name = (m[2] || '').toLowerCase();
+      if (getEmojiCategory(cat)) {
+        const url = buildEmojiUrl(cat, name, 'png');
+        nodes.push(
+          <img
+            key={`emoji-${k++}-${cat}-${name}`}
+            src={url}
+            alt={`emoji:${cat}_${name}`}
+            className="inline-block transition-transform duration-150 ease-out"
+            style={{ height: '1em', width: 'auto', objectFit: 'contain', verticalAlign: '-0.2em', margin: '0 0.05em' }}
+            loading="lazy"
+            onError={(e) => {
+              const order = ['png', 'webp', 'gif'];
+              const curExt = (e.currentTarget.src.match(/\.(\w+)(?:\?|#|$)/) || [,''])[1];
+              const rest = order.filter(x => x !== curExt);
+              for (const ext of rest) {
+                const candidate = buildEmojiUrl(cat, name, ext);
+                if (e.currentTarget.src !== candidate) {
+                  e.currentTarget.src = candidate;
+                  return;
+                }
+              }
+            }}
+          />
+        );
+      } else {
+        nodes.push(m[0]);
+      }
+      lastIndex = m.index + m[0].length;
+    }
+    const rest = text.slice(lastIndex);
+    if (rest) nodes.push(rest);
+    return nodes;
+  };
+
+  // --- Audio waveform drawing helpers ---
+  const drawWaveform = useCallback(() => {
+    const canvas = waveformCanvasRef.current;
+    const analyser = analyserRef.current;
+    const dataArray = dataArrayRef.current;
+    if (!canvas || !analyser || !dataArray) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const width = canvas.width;
+    const height = canvas.height;
+    ctx.clearRect(0, 0, width, height);
+    analyser.getByteTimeDomainData(dataArray);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#888';
+    ctx.beginPath();
+    const sliceWidth = width / dataArray.length;
+    let x = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      const v = dataArray[i] / 128.0;
+      const y = (v * height) / 2;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+      x += sliceWidth;
+    }
+    ctx.stroke();
+    rafRef.current = requestAnimationFrame(drawWaveform);
+  }, []);
+
+  const setupWaveform = (stream) => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AudioCtx();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      const bufferLength = analyser.fftSize;
+      const dataArray = new Uint8Array(bufferLength);
+      source.connect(analyser);
+      audioCtxRef.current = audioCtx;
+      analyserRef.current = analyser;
+      dataArrayRef.current = dataArray;
+      drawWaveform();
+    } catch (e) {
+      console.warn('Waveform setup failed:', e);
+    }
+  };
+
+  const cleanupRecording = () => {
+    try { cancelAnimationFrame(rafRef.current); } catch {}
+    rafRef.current = null;
+    try { audioCtxRef.current && audioCtxRef.current.close(); } catch {}
+    audioCtxRef.current = null;
+    analyserRef.current = null;
+    dataArrayRef.current = null;
+    if (mediaStreamRef.current) {
+      for (const track of mediaStreamRef.current.getTracks()) {
+        try { track.stop(); } catch {}
+      }
+      mediaStreamRef.current = null;
+    }
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+    setRecordStartAt(null);
+    setAccumulatedMs(0);
+    setIsPaused(false);
+  };
+
+  const formatMs = (ms) => {
+    const sec = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const currentDurationMs = (() => {
+    if (!recordStartAt) return accumulatedMs;
+    return accumulatedMs + (isPaused ? 0 : (Date.now() - recordStartAt));
+  })();
+
+  const handleRecordClick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isRecording) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        setHasMicPermission(true);
+        mediaStreamRef.current = stream;
+        setupWaveform(stream);
+        const mimeTypes = [
+          'audio/webm;codecs=opus',
+          'audio/webm',
+          'audio/mp4',
+          'audio/ogg'
+        ];
+        let selectedType = '';
+        for (const mt of mimeTypes) {
+          if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(mt)) {
+            selectedType = mt; break;
+          }
+        }
+        const mr = new MediaRecorder(stream, selectedType ? { mimeType: selectedType } : undefined);
+        audioChunksRef.current = [];
+        mr.ondataavailable = (evt) => {
+          if (evt.data && evt.data.size > 0) audioChunksRef.current.push(evt.data);
+        };
+        mr.onstop = async () => {
+          try {
+            const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' });
+            const ext = (blob.type && blob.type.split('/')[1]) || 'webm';
+            const file = new File([blob], `memo_record_${Date.now()}.${ext}`, { type: blob.type || 'audio/webm' });
+            const durationMs = currentDurationMs;
+            try {
+              try { fileStorageService.init((JSON.parse(localStorage.getItem('s3Config')||'{}'))); } catch {}
+              const meta = await fileStorageService.processFile(file, { type: 'audio' });
+              const clip = { ...meta, durationMs, createdAt: new Date().toISOString(), previewUrl: URL.createObjectURL(blob) };
+              onAddAudioClip?.(currentMemoId || null, clip);
+            } catch (err) {
+              console.error('Store audio failed:', err);
+            }
+          } finally {
+            cleanupRecording();
+            setIsRecording(false);
+          }
+        };
+        mediaRecorderRef.current = mr;
+        mr.start();
+        setIsRecording(true);
+        setIsPaused(false);
+        setRecordStartAt(Date.now());
+      } catch (err) {
+        console.error('getUserMedia failed:', err);
+        setHasMicPermission(false);
+        try { await navigator.mediaDevices.getUserMedia({ audio: true }); setHasMicPermission(true); } catch {}
+      }
+    } else {
+      try { mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive' && mediaRecorderRef.current.stop(); } catch {}
+    }
+  };
+
+  const handlePauseResume = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const mr = mediaRecorderRef.current;
+    if (!mr) return;
+    if (!isPaused) {
+      try { mr.pause(); } catch {}
+      if (recordStartAt) setAccumulatedMs(prev => prev + (Date.now() - recordStartAt));
+      setRecordStartAt(null);
+      setIsPaused(true);
+    } else {
+      try { mr.resume(); } catch {}
+      setRecordStartAt(Date.now());
+      setIsPaused(false);
+    }
+  };
+
+  // editor-level audio controls
+  const handleEditorTogglePlay = (idx) => {
+    const key = String(idx);
+    const el = editorAudioRefs.current[key];
+    if (!el) return;
+    if (el.paused) {
+      el.play();
+      setEditorPlaying((p) => ({ ...p, [key]: true }));
+    } else {
+      el.pause();
+      setEditorPlaying((p) => ({ ...p, [key]: false }));
+    }
+  };
+
+  const ensureEmojiCategoryLoaded = async (categoryKey) => {
+    if ((emojiMap[categoryKey] || []).length > 0) return;
+    const items = await loadEmojiItems(categoryKey);
+    setEmojiMap((m) => ({ ...m, [categoryKey]: items }));
+  };
+
+  // resolve editor clip urls for indexeddb/base64
+  useEffect(() => {
+    const resolve = async () => {
+      try {
+        const next = {};
+        const clips = Array.isArray(audioClips) ? audioClips : [];
+        for (let i = 0; i < clips.length; i++) {
+          const clip = clips[i];
+          if (!clip) continue;
+          const key = String(i);
+          if (clip.previewUrl || clip.url || clip.data) {
+            next[key] = clip.previewUrl || clip.url || clip.data;
+          } else if (clip.storageType === 'indexeddb' && clip.id) {
+            try {
+              const restored = await fileStorageService.restoreFile(clip);
+              if (restored && restored.data) next[key] = restored.data;
+            } catch {}
+          }
+        }
+        setEditorClipUrls(next);
+      } catch {}
+    };
+    resolve();
+  }, [JSON.stringify(typeof audioClips === 'object' ? audioClips : [])]);
+
   // 计算选择卡片的屏幕定位，避免被滚动容器裁剪
   const updatePickerPosition = useCallback(() => {
     const btn = backlinkBtnRef.current;
@@ -210,6 +496,18 @@ const MemoEditor = ({
     if (left < margin) left = margin;
     const top = Math.min(rect.bottom + 6, window.innerHeight - margin);
     setPickerPos({ left, top, width });
+  }, []);
+
+  const updateEmojiPickerPosition = useCallback(() => {
+    const btn = emojiBtnRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const width = 420;
+    const margin = 8;
+    let left = Math.min(rect.left, window.innerWidth - width - margin);
+    if (left < margin) left = margin;
+    const top = Math.min(rect.bottom + 6, window.innerHeight - margin);
+    setEmojiPickerPos({ left, top, width });
   }, []);
 
   useEffect(() => {
@@ -226,6 +524,32 @@ const MemoEditor = ({
     };
   }, [showBacklinkPicker, updatePickerPosition]);
 
+  useEffect(() => {
+    if (!showEmojiPicker) return;
+    updateEmojiPickerPosition();
+    const onResize = () => updateEmojiPickerPosition();
+    const onScroll = () => updateEmojiPickerPosition();
+    window.addEventListener('resize', onResize);
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onScroll, true);
+    };
+  }, [showEmojiPicker, updateEmojiPickerPosition]);
+  // Close emoji panel when clicking anywhere outside the panel or editor controls (except the emoji button itself)
+  useEffect(() => {
+    if (!showEmojiPicker) return;
+    const onDocMouseDown = (e) => {
+      const panel = emojiPanelRef.current;
+      const btn = emojiBtnRef.current;
+      if (panel && panel.contains(e.target)) return;
+      if (btn && btn.contains(e.target)) return;
+      setShowEmojiPicker(false);
+    };
+    document.addEventListener('mousedown', onDocMouseDown, true);
+    return () => document.removeEventListener('mousedown', onDocMouseDown, true);
+  }, [showEmojiPicker]);
+
   const findMemoById = (id) => memosList.find(m => m.id === id);
   const backlinkMemos = (backlinks || []).map(findMemoById).filter(Boolean);
 
@@ -237,7 +561,20 @@ const MemoEditor = ({
 
   const handleBlur = () => {
     setIsFocused(false);
+    // 失去焦点时关闭选择器
+    setShowBacklinkPicker(false);
+    setShowEmojiPicker(false);
     onBlur?.();
+  };
+
+  // 在编辑器聚焦时，点击编辑器区域任意位置（不含双链按钮/选择器）关闭选择器
+  const handleContainerMouseDown = () => {
+    if (showBacklinkPicker) {
+      setShowBacklinkPicker(false);
+    }
+    if (showEmojiPicker) {
+      setShowEmojiPicker(false);
+    }
   };
 
   // 当value变化时调整高度
@@ -257,7 +594,18 @@ const MemoEditor = ({
     fetchHitokoto();
   }, [hitokotoConfig]);
 
-  // 计算字符数 - 在输入法合成期间使用合成前的值
+  // duration ticker while recording to update UI
+  useEffect(() => {
+    if (isRecording && !isPaused) {
+      const id = setInterval(() => setDurationTick((t) => t + 1), 200);
+      return () => clearInterval(id);
+    }
+  }, [isRecording, isPaused]);
+
+  // cleanup on unmount
+  useEffect(() => () => cleanupRecording(), []);
+
+  // 计算字符数 - 在输入法合成期间使用合成前的字符数
   const getDisplayCharCount = () => {
     if (isComposing && compositionValue) {
       // 输入法合成期间，使用合成开始前的字符数
@@ -272,8 +620,9 @@ const MemoEditor = ({
 
   return (
     <div
+      ref={rootRef}
       className={cn(
-        "relative border rounded-lg bg-white dark:bg-gray-800 transition-all duration-200",
+        "relative border rounded-lg overflow-hidden bg-white dark:bg-gray-800 transition-all duration-200",
         isFocused
           ? "ring-2 shadow-sm"
           : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600",
@@ -284,6 +633,7 @@ const MemoEditor = ({
         borderColor: themeColor,
         '--tw-ring-color': themeColor
       } : {}}
+      onMouseDown={handleContainerMouseDown}
     >
       {/* 主要文本区域 */}
       <textarea
@@ -297,18 +647,17 @@ const MemoEditor = ({
         onFocus={handleFocus}
         onBlur={handleBlur}
         placeholder={placeholder}
-        disabled={disabled}
         className={cn(
           "w-full p-3 bg-transparent resize-none outline-none border-none theme-selection",
           "text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500",
-          currentFont !== 'default' && "custom-font-content",
+          "custom-font-content",
           disabled && "cursor-not-allowed"
         )}
         style={{
           minHeight: '120px',
           maxHeight: '400px',
           lineHeight: '1.5rem',
-          fontSize: '0.875rem',
+          fontSize: (fontConfig?.fontSize ? `${fontConfig.fontSize}px` : undefined),
           ...(currentFont === 'default' && {
             fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif'
           })
@@ -326,7 +675,9 @@ const MemoEditor = ({
                 onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onPreviewMemo?.(m.id); }}
                 className="max-w-full inline-flex items-center gap-1 pl-2 pr-2 py-0.5 rounded-md bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200 text-xs hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
               >
-                <span className="truncate inline-block max-w-[180px]">{m.content?.replace(/\n/g, ' ').slice(0, 50) || '（无内容）'}</span>
+                <span className="truncate inline-flex items-center max-w-[180px]">
+                  {renderInlineWithEmoji(m.content?.replace(/\n/g, ' ').slice(0, 50) || '暂无内容')}
+                </span>
                 <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />
               </button>
               <button
@@ -342,29 +693,75 @@ const MemoEditor = ({
         </div>
       )}
 
+      {/* 音频 Chips（编辑时显示） */}
+      {isFocused && Array.isArray(audioClips) && audioClips.length > 0 && (
+        <div className="px-3 pb-1 -mt-1 flex flex-wrap gap-2">
+          {audioClips.map((clip, idx) => {
+            const key = String(idx);
+            const src = editorClipUrls[key] || clip?.previewUrl || clip?.url || clip?.data || '';
+            const isPlaying = !!editorPlaying[key];
+            return (
+              <span key={`clip-${idx}`} className="inline-flex items-center group">
+                <button
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleEditorTogglePlay(idx); }}
+                  className="max-w-full inline-flex items-center gap-1 pl-2 pr-2 py-0.5 rounded-md bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200 text-xs hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                  title="播放录音"
+                >
+                  {isPlaying ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="flex-shrink-0">
+                      <path d="M8 6h3v12H8zM13 6h3v12h-3z" fill="currentColor" />
+                    </svg>
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="flex-shrink-0">
+                      <path d="M8 5l12 7-12 7V5z" fill="currentColor" />
+                    </svg>
+                  )}
+                  <span className="truncate inline-flex items-center max-w-[180px]">录音 {clip?.durationMs ? `· ${formatMs(clip.durationMs)}` : ''}</span>
+                </button>
+                <audio
+                  ref={(el) => { if (el) editorAudioRefs.current[key] = el; }}
+                  src={src}
+                  style={{ display: 'none' }}
+                  onEnded={() => setEditorPlaying((p) => ({ ...p, [key]: false }))}
+                />
+                <button
+                  type="button"
+                  aria-label="移除录音"
+                  className="ml-1 w-4 h-4 rounded hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onRemoveAudioClip?.(currentMemoId || null, idx); }}
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
       {/* 底部信息栏 */}
       {(showCharCount || onSubmit) && (
-        <div className="flex items-center justify-between px-3 py-1 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50 min-h-[32px]">
+        <div className="flex items-center justify-between px-3 py-1 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50 min-h-[32px] rounded-b-lg">
           {/* 未聚焦时显示一言 */}
-          {!isFocused && hitokotoConfig.enabled ? (
-            <a
-              className={cn(
-                "flex-1 text-center text-xs text-gray-500 truncate px-2 transition-colors duration-300",
-                currentFont !== 'default' && "custom-font-content"
-              )}
-              style={{
-                '--hover-color': 'var(--theme-color)',
-              }}
-              onMouseEnter={(e) => e.target.style.color = 'var(--theme-color)'}
-              onMouseLeave={(e) => e.target.style.color = ''}
-            >
-              {hitokoto.text}
+              {!(isFocused || isRecording) && hitokotoConfig.enabled ? (
+                <a
+                  className={cn(
+                    "flex-1 text-center text-xs text-gray-500 truncate px-2 transition-colors duration-300",
+                    currentFont !== 'default' && "custom-font-content"
+                  )}
+                  style={{
+                    '--hover-color': 'var(--theme-color)',
+                  }}
+                  onMouseEnter={(e) => e.target.style.color = 'var(--theme-color)'}
+                  onMouseLeave={(e) => e.target.style.color = ''}
+                >
+                  {hitokoto.text}
             </a>
-          ) : !isFocused && !hitokotoConfig.enabled ? (
+          ) : !(isFocused || isRecording) && !hitokotoConfig.enabled ? (
             <div className="flex-1"></div>
-          ) : isFocused ? (
+          ) : (isFocused || isRecording) ? (
             <>
-              {/* 左侧：字数 + 插入spoiler按钮 */}
+              {/* 左侧：字数+ 插入spoiler按钮 */}
               <div className="flex items-center gap-2 relative">
                 {showCharCount && (
                   <div className={cn(
@@ -381,7 +778,7 @@ const MemoEditor = ({
                 {/* Spoiler 快捷按钮 */}
                 <button
                   type="button"
-                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); insertSpoilerAtCursor(); }}
+                  onMouseDown={(e) => { e.preventDefault(); /* 允许冒泡以便父容器关闭选择器*/ insertSpoilerAtCursor(); }}
                   className="inline-flex items-center justify-center h-7 w-7 rounded-md text-gray-600 bg-white hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors"
                 >
                   {/* 模糊的小圆角矩形图标（默认模糊效果） */}
@@ -399,7 +796,16 @@ const MemoEditor = ({
                 <button
                   type="button"
                   ref={backlinkBtnRef}
-                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setShowBacklinkPicker(v => !v); }}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const willShow = !showBacklinkPicker;
+                    setShowBacklinkPicker(willShow);
+                    if (willShow) {
+                      setShowEmojiPicker(false);
+                      updatePickerPosition();
+                    }
+                  }}
                   className={cn(
                     "inline-flex items-center justify-center h-7 px-2 rounded-md text-gray-600 bg-white hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors"
                   )}
@@ -411,6 +817,77 @@ const MemoEditor = ({
                   </svg>
                 </button>
 
+                {/* Emoji 表情按钮 */}
+                <button
+                  type="button"
+                  ref={emojiBtnRef}
+                  onMouseDown={async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const willShow = !showEmojiPicker;
+                    setShowEmojiPicker(willShow);
+                    if (willShow) {
+                      setShowBacklinkPicker(false);
+                      updateEmojiPickerPosition();
+                      await ensureEmojiCategoryLoaded(activeEmojiCategory);
+                    }
+                  }}
+                  className={cn(
+                    "inline-flex items-center justify-center h-7 px-2 rounded-md text-gray-600 bg-white hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors"
+                  )}
+                  title="插入表情"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" />
+                    <circle cx="9" cy="10" r="1" fill="currentColor" />
+                    <circle cx="15" cy="10" r="1" fill="currentColor" />
+                    <path d="M8.5 14c1 1.2 2.5 2 3.5 2s2.5-.8 3.5-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                </button>
+
+                {/* 录音按钮 */}
+                <button
+                  type="button"
+                  onMouseDown={handleRecordClick}
+                  className={cn(
+                    "inline-flex items-center justify-center h-7 w-7 rounded-md bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 transition-colors",
+                    isRecording ? "ring-2 ring-red-500" : ""
+                  )}
+                  title={isRecording ? "停止录音" : (hasMicPermission ? "开始录音" : "申请麦克风权限并开始录音")}
+                >
+                  {isRecording ? (
+                    <div className="w-3.5 h-2.5 rounded-sm" style={{ backgroundColor: '#ef4444' }} />
+                  ) : (
+                    <Mic className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+                  )}
+                </button>
+
+                {/* 波纹与暂停控制 */}
+                {isRecording && (
+                  <div className="ml-2 flex items-center gap-2 select-none" onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                    <AudioWaveform
+                      stream={mediaStreamRef.current}
+                      width={90}
+                      height={20}
+                      className="rounded bg-gray-100 dark:bg-gray-700"
+                      style={{ display: 'block' }}
+                    />
+                    <div className="text-[11px] text-gray-500 dark:text-gray-400 min-w-[36px] text-right">{formatMs(currentDurationMs)}</div>
+                    <button
+                      type="button"
+                      onMouseDown={handlePauseResume}
+                      className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700"
+                      title={isPaused ? "继续录音" : "暂停录音"}
+                    >
+                      {isPaused ? (
+                        <Play className="h-4 w-4 text-gray-700 dark:text-gray-200" />
+                      ) : (
+                        <Pause className="h-4 w-4 text-gray-700 dark:text-gray-200" />
+                      )}
+                    </button>
+                  </div>
+                )}
+
                 {/* 双链选择卡片 */}
                 {isFocused && showBacklinkPicker && (
                   <div
@@ -418,7 +895,7 @@ const MemoEditor = ({
                     style={{ left: pickerPos?.left ?? 16, top: pickerPos?.top ?? 100, width: pickerPos?.width ?? 320 }}
                     onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
                   >
-                    <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">选择一个 Memo 建立双链</div>
+                    <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">选择一篇Memo 建立双链</div>
                     <div className="overflow-y-auto pr-2 scrollbar-transparent" style={{ maxHeight: '11rem' }}>
                       {(memosList || [])
                         .filter(m => m.id !== currentMemoId)
@@ -431,7 +908,9 @@ const MemoEditor = ({
                           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handlePickBacklink(m.id); }}
                              
                         >
-                          <div className="truncate">{m.content?.replace(/\n/g, ' ') || '（无内容）'}</div>
+                          <div className="truncate whitespace-nowrap overflow-hidden text-ellipsis">
+                            {renderInlineWithEmoji((m.content?.replace(/\n/g, ' ') || '暂无内容'))}
+                          </div>
                           <div className="text-[11px] text-gray-400 mt-0.5">{new Date(m.updatedAt || m.createdAt).toLocaleString('zh-CN', { month: 'short', day: 'numeric' })}</div>
                         </button>
                       ))}
@@ -439,8 +918,83 @@ const MemoEditor = ({
                         .filter(m => m.id !== currentMemoId)
                         .filter(m => !(Array.isArray(backlinks) && backlinks.includes(m.id)))
                         .length === 0 && (
-                        <div className="px-3 py-6 text-center text-xs text-gray-500 dark:text-gray-400">暂无可选 Memo</div>
+                        <div className="px-3 py-6 text-center text-xs text-gray-500 dark:text-gray-400">暂无可选Memo</div>
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Emoji 选择卡片 */}
+                {isFocused && showEmojiPicker && (
+                  <div
+                    ref={emojiPanelRef}
+                    className="fixed z-50 max-h-64 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden"
+                    style={{ left: emojiPickerPos?.left ?? 16, top: emojiPickerPos?.top ?? 100, width: emojiPickerPos?.width ?? 420 }}
+                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  >
+                    <div className="flex">
+                      {/* 左侧分类按钮 */}
+                      <div className="w-16 border-r border-gray-100 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                        {EMOJI_CATEGORIES.map((cat) => (
+                          <button
+                            key={cat.key}
+                            className={cn(
+                              "w-full px-2 py-2 text-sm transition-colors text-center",
+                              activeEmojiCategory === cat.key
+                                ? "bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                                : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                            )}
+                            onMouseDown={async (e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setActiveEmojiCategory(cat.key);
+                              await ensureEmojiCategoryLoaded(cat.key);
+                            }}
+                          >
+                            {cat.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* 右侧具体表情列表 */}
+                      <div className="flex-1 p-2 overflow-y-auto scrollbar-transparent" style={{ maxHeight: '16rem' }}>
+                        {((emojiMap[activeEmojiCategory] || []).length > 0) ? (
+                          <div className="grid grid-cols-8 gap-2">
+                            {(emojiMap[activeEmojiCategory] || []).map((item) => {
+                              const name = item.name;
+                              const base = EMOJI_CATEGORIES.find(c => c.key === activeEmojiCategory)?.basePath || '';
+                              const url = item.file ? `${base}/${item.file}` : buildEmojiUrl(activeEmojiCategory, name);
+                              return (
+                                <button
+                                  key={`emoji-${activeEmojiCategory}-${name}`}
+                                  className="group w-9 h-9 rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center"
+                                  title={name}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    insertEmojiSyntax(activeEmojiCategory, name);
+                                    setShowEmojiPicker(false);
+                                  }}
+                                >
+                                  <img
+                                    src={url}
+                                    alt={`emoji:${activeEmojiCategory}_${name}`}
+                                    className="inline-block transform-gpu transition-transform duration-150 ease-out group-hover:scale-125"
+                                    style={{ height: '1.2em', width: 'auto', objectFit: 'contain', verticalAlign: '-0.2em' }}
+                                    loading="lazy"
+                                  />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="px-3 py-4 text-xs text-gray-500 dark:text-gray-400 space-y-2">
+                            <div>未检测到 {activeEmojiCategory} 表情清单。</div>
+                            <div>请在 <code className="px-1 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">public/emoji/{activeEmojiCategory}/</code> 下创建 <code className="px-1 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">manifest.json</code> 来显示内容</div>
+                            <pre className="text-[11px] bg-gray-50 dark:bg-gray-900 p-2 rounded border border-gray-100 dark:border-gray-700 overflow-auto">[ "weixiao", "shengqi" ]</pre>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}

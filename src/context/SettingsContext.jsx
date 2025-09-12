@@ -20,7 +20,8 @@ export function SettingsProvider({ children }) {
     types: ['a', 'b', 'c', 'd', 'i', 'j', 'k'] // 默认全选
   });
   const [fontConfig, setFontConfig] = useState({
-    selectedFont: 'default' // default, jinghua, lxgw, kongshan
+    selectedFont: 'default', // default, jinghua, lxgw, kongshan
+    fontSize: 16 // px, default 16
   });
   const [backgroundConfig, setBackgroundConfig] = useState({
     imageUrl: '',
@@ -104,6 +105,7 @@ export function SettingsProvider({ children }) {
               content: m.content,
               tags: JSON.parse(m.tags || '[]'),
               backlinks: JSON.parse(m.backlinks || '[]'),
+              audio_clips: JSON.parse(m.audio_clips || '[]'),
               created_at: m.created_at,
               updated_at: m.updated_at
             }));
@@ -118,6 +120,7 @@ export function SettingsProvider({ children }) {
               content: m.content,
               tags: JSON.parse(m.tags || '[]'),
               backlinks: JSON.parse(m.backlinks || '[]'),
+              audio_clips: JSON.parse(m.audio_clips || '[]'),
               created_at: m.created_at,
               updated_at: m.updated_at
             }));
@@ -186,6 +189,7 @@ export function SettingsProvider({ children }) {
                 content: cm.content,
                 tags: cm.tags || [],
                 backlinks: cm.backlinks || [],
+                audioClips: cm.audio_clips || pm.audioClips || [],
                 updatedAt: cm.updated_at,
                 lastModified: cm.updated_at
               });
@@ -229,7 +233,8 @@ export function SettingsProvider({ children }) {
         if (changed) {
           const merged = Array.from(mergedById.values()).map(m => ({
             ...m,
-            backlinks: Array.isArray(m.backlinks) ? m.backlinks : []
+            backlinks: Array.isArray(m.backlinks) ? m.backlinks : [],
+            audioClips: Array.isArray(m.audioClips) ? m.audioClips : []
           })).sort((a, b) => new Date(b.createdAt || b.timestamp || 0) - new Date(a.createdAt || a.timestamp || 0));
           localStorage.setItem('memos', JSON.stringify(merged));
           if (removedIds.length && Array.isArray(pinned)) {
@@ -338,7 +343,8 @@ export function SettingsProvider({ children }) {
     const savedFontConfig = localStorage.getItem('fontConfig');
     if (savedFontConfig) {
       try {
-        setFontConfig(JSON.parse(savedFontConfig));
+        const parsed = JSON.parse(savedFontConfig);
+        setFontConfig({ selectedFont: 'default', fontSize: 16, ...parsed });
       } catch (error) {
         console.warn('Failed to parse Font config:', error);
       }

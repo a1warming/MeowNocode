@@ -1,10 +1,10 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Clock, MoreVertical, ArrowUp, Send, X, Share2, Image } from 'lucide-react';
+import { Clock, MoreVertical, ArrowUp, X, Image } from 'lucide-react';
 import MemoEditor from '@/components/MemoEditor';
 import ContentRenderer from '@/components/ContentRenderer';
 import { useTheme } from '@/context/ThemeContext';
+import fileStorageService from '@/lib/fileStorageService';
 
 const MemoList = ({ 
   memos, 
@@ -32,9 +32,53 @@ const MemoList = ({
   onAddBacklink,
   onPreviewMemo,
   onRemoveBacklink
+  ,
+  onAddAudioClip,
+  onRemoveAudioClip
 }) => {
   const { themeColor } = useTheme();
   const memosForBacklinks = (allMemos && allMemos.length) ? allMemos : [...pinnedMemos, ...memos];
+  const editingWrapperRef = useRef(null);
+  const [audioUrls, setAudioUrls] = useState({});
+  const audioRefs = useRef({});
+  const [playing, setPlaying] = useState({});
+
+  const formatMs = (ms) => {
+    if (!ms && ms !== 0) return '';
+    const sec = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  // Resolve audio urls for clips stored in indexeddb/base64
+  useEffect(() => {
+    const resolveAll = async () => {
+      const next = { ...audioUrls };
+      const lists = [memos, pinnedMemos];
+      for (const list of lists) {
+        for (const memo of list) {
+          const clips = Array.isArray(memo.audioClips) ? memo.audioClips : [];
+          for (let i = 0; i < clips.length; i++) {
+            const clip = clips[i];
+            const key = `${memo.id}:${i}`;
+            if (next[key]) continue;
+            if (clip && clip.url) { next[key] = clip.url; continue; }
+            if (clip && clip.storageType === 'base64' && clip.data) { next[key] = clip.data; continue; }
+            if (clip && clip.storageType === 'indexeddb' && clip.id) {
+              try {
+                const restored = await fileStorageService.restoreFile(clip);
+                if (restored && restored.data) next[key] = restored.data;
+              } catch {}
+            }
+          }
+        }
+      }
+      setAudioUrls(next);
+    };
+    resolveAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memos, pinnedMemos]);
 
   // 处理菜单定位
   useEffect(() => {
@@ -78,6 +122,27 @@ const MemoList = ({
       };
     }
   }, [activeMenuId]);
+
+  // 当列表中有正在编辑的 memo 时，点击编辑器外自动保存并退出编辑
+  useEffect(() => {
+    if (!editingId) return;
+    const handleOutside = (e) => {
+      const el = editingWrapperRef.current;
+      if (!el) return;
+      const target = e.target;
+      if (el.contains(target)) return; // 点击在编辑器内，忽略
+      // 在编辑器外点击，自动保存并退出
+      try {
+        onSaveEdit?.(editingId);
+      } catch {}
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('touchstart', handleOutside, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('touchstart', handleOutside);
+    };
+  }, [editingId, onSaveEdit]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -240,7 +305,7 @@ const MemoList = ({
                     </div>
                     
         {editingId === memo.id ? (
-                      <div className="mb-4">
+                      <div className="mb-4" ref={editingWrapperRef}>
                         <div className="relative">
                           <MemoEditor
                             value={editContent}
@@ -250,30 +315,16 @@ const MemoList = ({
                             showCharCount={true}
                             autoFocus={true}
                             memosList={memosForBacklinks}
-          currentMemoId={memo.id}
-          backlinks={Array.isArray(memo.backlinks) ? memo.backlinks : []}
-          onAddBacklink={onAddBacklink}
-          onPreviewMemo={onPreviewMemo}
+                            currentMemoId={memo.id}
+                            backlinks={Array.isArray(memo.backlinks) ? memo.backlinks : []}
+                            onAddBacklink={onAddBacklink}
+                            onPreviewMemo={onPreviewMemo}
                             onRemoveBacklink={onRemoveBacklink}
+                            audioClips={Array.isArray(memo.audioClips) ? memo.audioClips : []}
+                            onRemoveAudioClip={onRemoveAudioClip}
+                            onAddAudioClip={onAddAudioClip}
+                            onSubmit={() => onSaveEdit(memo.id)}
                           />
-                          <div className="absolute bottom-12 right-2 flex items-center space-x-1 sm:space-x-2">
-                            <Button
-                              variant="outline"
-                              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                              onClick={onCancelEdit}
-                              className="bg-white hover:bg-gray-50 text-gray-700 border-gray-300 px-2 py-1 sm:px-3 sm:py-2 text-sm"
-                            >
-                              取消
-                            </Button>
-                            <Button
-                              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                              onClick={() => onSaveEdit(memo.id)}
-                              disabled={!editContent.trim()}
-                              className="bg-slate-600 hover:bg-slate-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-2 py-1 sm:px-3 sm:py-2 text-sm"
-                            >
-                              <Send className="h-3 w-3 sm:h-4 sm:w-4" />
-                            </Button>
-                          </div>
                         </div>
                       </div>
                     ) : (
@@ -313,6 +364,44 @@ const MemoList = ({
                               >
                                 ×
                               </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* 音频录音（展示在每条 memo 底部，芯片风格） */}
+                    {Array.isArray(memo.audioClips) && memo.audioClips.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {memo.audioClips.map((clip, idx) => {
+                          const key = `${memo.id}:${idx}`;
+                          const src = clip?.url || clip?.data || audioUrls[key] || '';
+                          const isPlaying = !!playing[key];
+                          return (
+                            <span key={key} className="inline-flex items-center group">
+                              <button
+                                type="button"
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); const el = audioRefs.current[key]; if (!el) return; if (el.paused) { el.play(); setPlaying(p=>({...p,[key]:true})); } else { el.pause(); setPlaying(p=>({...p,[key]:false})); } }}
+                                className="max-w-full inline-flex items-center gap-1 pl-2 pr-2 py-0.5 rounded-md bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200 text-xs hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                                title="播放录音"
+                              >
+                                {isPlaying ? (
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="flex-shrink-0">
+                                    <path d="M8 6h3v12H8zM13 6h3v12h-3z" fill="currentColor" />
+                                  </svg>
+                                ) : (
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="flex-shrink-0">
+                                    <path d="M8 5l12 7-12 7V5z" fill="currentColor" />
+                                  </svg>
+                                )}
+                                <span className="truncate inline-block max-w-[200px]">录音{clip?.durationMs ? ` · ${formatMs(clip.durationMs)}` : ''}</span>
+                              </button>
+                              <audio
+                                ref={(el) => { if (el) audioRefs.current[key] = el; }}
+                                src={src}
+                                style={{ display: 'none' }}
+                                onEnded={() => setPlaying((p) => ({ ...p, [key]: false }))}
+                              />
                             </span>
                           );
                         })}
