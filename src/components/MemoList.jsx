@@ -1,17 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { Clock, MoreVertical, ArrowUp, X, Image } from 'lucide-react';
+import { Clock, MoreVertical, ArrowUp, X, Image, Globe, Lock } from 'lucide-react';
 import MemoEditor from '@/components/MemoEditor';
 import ContentRenderer from '@/components/ContentRenderer';
 import { useTheme } from '@/context/ThemeContext';
 import fileStorageService from '@/lib/fileStorageService';
 
-const MemoList = ({ 
-  memos, 
-  pinnedMemos, 
-  activeMenuId, 
-  editingId, 
-  editContent, 
+const MemoList = ({
+  memos,
+  pinnedMemos,
+  activeMenuId,
+  editingId,
+  editContent,
   activeTag,
   activeDate, // 新增日期筛选状态
   showScrollToTop,
@@ -31,10 +31,11 @@ const MemoList = ({
   allMemos = [],
   onAddBacklink,
   onPreviewMemo,
-  onRemoveBacklink
-  ,
+  onRemoveBacklink,
   onAddAudioClip,
-  onRemoveAudioClip
+  onRemoveAudioClip,
+  // 公开状态控制
+  isAuthenticated = true
 }) => {
   const { themeColor } = useTheme();
   const memosForBacklinks = (allMemos && allMemos.length) ? allMemos : [...pinnedMemos, ...memos];
@@ -80,48 +81,33 @@ const MemoList = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memos, pinnedMemos]);
 
-  // 处理菜单定位
-  useEffect(() => {
-    if (activeMenuId && menuRefs.current[activeMenuId]) {
-      const menuElement = menuRefs.current[activeMenuId];
-      const buttonRect = menuElement.getBoundingClientRect();
-      
-      // 更新菜单位置
-      const updateMenuPosition = () => {
-        const menuPanel = menuElement.querySelector('[class*="fixed"]');
-        if (menuPanel) {
-          menuPanel.style.top = `${buttonRect.bottom + 5}px`;
-          
-          // 确保菜单不会超出视窗右侧
-          const viewportWidth = window.innerWidth;
-          const menuWidth = menuPanel.offsetWidth;
-          const rightSpace = viewportWidth - buttonRect.right;
-          
-          if (rightSpace < menuWidth) {
-            // 如果右侧空间不足，将菜单对齐到按钮左侧
-            menuPanel.style.right = 'auto';
-            menuPanel.style.left = `${buttonRect.left - menuWidth + buttonRect.width}px`;
-          } else {
-            // 否则保持对齐到按钮右侧
-            menuPanel.style.right = `${viewportWidth - buttonRect.right}px`;
-            menuPanel.style.left = 'auto';
-          }
-        }
-      };
-      
-      // 初始更新位置
-      updateMenuPosition();
-      
-      // 监听窗口大小变化和滚动，重新计算位置
-      window.addEventListener('resize', updateMenuPosition);
-      window.addEventListener('scroll', updateMenuPosition);
-      
-      return () => {
-        window.removeEventListener('resize', updateMenuPosition);
-        window.removeEventListener('scroll', updateMenuPosition);
-      };
+  // 计算菜单位置
+  const getMenuPosition = (memoId) => {
+    const menuElement = menuRefs.current[memoId];
+    if (!menuElement) return { style: { opacity: 0 } };
+
+    const buttonRect = menuElement.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const menuWidth = 192; // w-48 = 192px
+    const rightSpace = viewportWidth - buttonRect.right;
+
+    let style = {
+      top: buttonRect.bottom + 5,
+      opacity: 1,
+    };
+
+    if (rightSpace < menuWidth) {
+      // 如果右侧空间不足，将菜单对齐到按钮左侧
+      style.right = 'auto';
+      style.left = buttonRect.left - menuWidth + buttonRect.width;
+    } else {
+      // 否则对齐到按钮右侧
+      style.right = viewportWidth - buttonRect.right;
+      style.left = 'auto';
     }
-  }, [activeMenuId]);
+
+    return { style };
+  };
 
   // 当列表中有正在编辑的 memo 时，点击编辑器外自动保存并退出编辑
   useEffect(() => {
@@ -154,7 +140,7 @@ const MemoList = ({
               className="h-4 w-4 sm:h-5 sm:w-5 mr-2 transition-colors duration-300"
               style={{ color: themeColor }}
             />
-            近期想法
+            {isAuthenticated ? '近期想法' : 'Memos'}
           </h2>
           
           {/* 筛选条件显示区域 */}
@@ -208,7 +194,9 @@ const MemoList = ({
                   style={pinnedMemos.some(p => p.id === memo.id) ? { borderLeftColor: themeColor } : {}}
                 >
                   <CardContent className="p-3 sm:p-4">
-                    {/* 菜单按钮 */}
+
+                    {/* 菜单按钮 - 只有登录用户才能看到 */}
+                    {isAuthenticated && (
                     <div
                       className="absolute top-3 right-3 sm:top-4 sm:right-4"
                       ref={(el) => menuRefs.current[memo.id] = el}
@@ -226,9 +214,30 @@ const MemoList = ({
                       {/* 菜单面板 */}
                       {activeMenuId === memo.id && (
                         <div
-                          className="fixed w-40 sm:w-48 bg-white dark:bg-gray-800 rounded-md shadow-lg py-1 z-50 border border-gray-200 dark:border-gray-700"
+                          className="fixed w-40 sm:w-48 bg-white dark:bg-gray-800 rounded-md shadow-lg py-1 z-50 border border-gray-200 dark:border-gray-700 transition-opacity duration-150"
                           onClick={(e) => e.stopPropagation()}
+                          style={getMenuPosition(memo.id).style}
                         >
+                          {/* 公开/私有切换按钮 */}
+                          {isAuthenticated && (
+                            <button
+                              onClick={(e) => onMenuAction(e, memo.id, 'toggle-public')}
+                              className="block w-full text-left px-3 py-2 sm:px-4 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center"
+                            >
+                              {memo.is_public ? (
+                                <>
+                                  <Lock className="h-4 w-4 mr-2 flex-shrink-0" />
+                                  <span className="truncate">设为私有</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Globe className="h-4 w-4 mr-2 flex-shrink-0" />
+                                  <span className="truncate">设为公开</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+
                           {/* 置顶/取消置顶按钮 */}
                           {pinnedMemos.some(p => p.id === memo.id) ? (
                             <button
@@ -303,8 +312,9 @@ const MemoList = ({
                         </div>
                       )}
                     </div>
+                    )}
                     
-        {editingId === memo.id ? (
+        {editingId === memo.id && isAuthenticated ? (
                       <div className="mb-4" ref={editingWrapperRef}>
                         <div className="relative">
                           <MemoEditor
@@ -408,7 +418,18 @@ const MemoList = ({
                       </div>
                     )}
 
-                    <div className="mt-3 flex justify-end">
+                    <div className="mt-3 flex items-center justify-end space-x-2">
+                      {/* 公开状态图标 - 仅登录用户可见 */}
+                      {isAuthenticated && (
+                        <div className="flex items-center">
+                          {memo.is_public ? (
+                            <Globe className="h-4 w-4 text-green-600 dark:text-green-400" title="公开" />
+                          ) : (
+                            <Lock className="h-4 w-4 text-gray-500 dark:text-gray-400" title="私有" />
+                          )}
+                        </div>
+                      )}
+
                       <div className="text-xs text-gray-500 dark:text-gray-400">
                         {new Date(memo.updatedAt).toLocaleString('zh-CN', {
                           month: 'short',

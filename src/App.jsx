@@ -7,9 +7,9 @@ import { navItems } from "./nav-items";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { SettingsProvider } from "@/context/SettingsContext";
 import { MusicProvider } from "@/context/MusicContext";
-import { AuthProvider } from "@/context/AuthContext";
 import { PasswordAuthProvider, usePasswordAuth } from "@/context/PasswordAuthContext";
 import Login from "@/pages/Login";
+import LoginDialog from "@/components/LoginDialog";
 
 // S3代理功能已移除，现在直接使用AWS SDK
 
@@ -31,38 +31,35 @@ const AppContent = () => {
     );
   }
 
-  // 如果需要认证但未认证，显示登录页
-  if (requiresAuth && !isAuthenticated) {
-    return <Login />;
-  }
-
-  // 否则显示正常应用内容
+  // 🔧 修改逻辑：不管是否需要认证，都显示主应用
+  // 未认证时显示公开博客模式，已认证时显示完整功能
   return (
-    <HashRouter>
-      <Routes>
-        {navItems.map(({ to, page }) => (
-          <Route key={to} path={to} element={page} />
-        ))}
-      </Routes>
-    </HashRouter>
+    <>
+      <HashRouter>
+        <Routes>
+          {navItems.map(({ to, page }) => (
+            <Route key={to} path={to} element={page} />
+          ))}
+        </Routes>
+      </HashRouter>
+      <LoginDialog />
+    </>
   );
 };
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <PasswordAuthProvider>
-      <AuthProvider>
-        <ThemeProvider>
-          <SettingsProvider>
-            <MusicProvider>
-              <TooltipProvider>
-                <Toaster />
-                <AppContent />
-              </TooltipProvider>
-            </MusicProvider>
-          </SettingsProvider>
-        </ThemeProvider>
-      </AuthProvider>
+      <ThemeProvider>
+        <SettingsProvider>
+          <MusicProvider>
+            <TooltipProvider>
+              <Toaster />
+              <AppContent />
+            </TooltipProvider>
+          </MusicProvider>
+        </SettingsProvider>
+      </ThemeProvider>
     </PasswordAuthProvider>
   </QueryClientProvider>
 );

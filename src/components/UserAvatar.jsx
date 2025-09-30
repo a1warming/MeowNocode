@@ -1,14 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { LogOut, User, Settings as SettingsIcon } from 'lucide-react';
+import { LogOut, LogIn, User, Settings as SettingsIcon } from 'lucide-react';
 import { usePasswordAuth } from '@/context/PasswordAuthContext';
-import { useAuth } from '@/context/AuthContext';
 import { useSettings } from '@/context/SettingsContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 const UserAvatar = ({ onOpenSettings }) => {
-  const { isAuthenticated, requiresAuth, logout } = usePasswordAuth();
-  const { user, getUserAvatarUrl, getUserDisplayName } = useAuth();
+  const { isAuthenticated, requiresAuth, logout, showLogin } = usePasswordAuth();
   const { cloudSyncEnabled, avatarConfig } = useSettings();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
@@ -32,31 +30,25 @@ const UserAvatar = ({ onOpenSettings }) => {
   const handleAvatarClick = () => {
     if (isAuthenticated) {
       setIsDropdownOpen(!isDropdownOpen);
+    } else {
+      // 未认证时，显示登录对话框
+      showLogin?.();
     }
-    // 如果未认证，不处理点击事件（会由App组件重定向到登录页）
   };
 
-  // 获取头像URL的优先级：自定义头像 > GitHub头像 > 默认头像
+  // 获取头像URL的优先级：自定义头像 > 默认头像
   const getAvatarUrl = () => {
     // 优先使用用户设置的自定义头像
     if (avatarConfig && avatarConfig.imageUrl) {
       return avatarConfig.imageUrl;
     }
-    
-    // 如果用户已通过GitHub登录，使用GitHub头像
-    if (user && getUserAvatarUrl()) {
-      return getUserAvatarUrl();
-    }
-    
+
     // 默认返回null，显示默认图标
     return null;
   };
 
   // 获取显示名称
   const getDisplayName = () => {
-    if (user && getUserDisplayName()) {
-      return getUserDisplayName();
-    }
     return isAuthenticated ? "已登录" : "访客";
   };
 
@@ -65,7 +57,7 @@ const UserAvatar = ({ onOpenSettings }) => {
       const result = logout();
       if (result.success) {
         setIsDropdownOpen(false);
-        // 退出后会自动重定向到登录页（由App组件处理）
+        // 退出后不重定向，继续显示公开博客模式
       }
     } catch (error) {
       console.error('退出登录异常:', error);
@@ -77,38 +69,42 @@ const UserAvatar = ({ onOpenSettings }) => {
     onOpenSettings?.();
   };
 
-  // 如果需要认证但未认证，不显示用户按钮（App组件会处理重定向）
-  if (requiresAuth && !isAuthenticated) {
-    return null;
-  }
-
-  // 已登录状态或无需认证 - 显示用户按钮
+  // 移除认证判断，始终显示用户按钮
+  // 未认证时显示登录按钮，已认证时显示用户头像和下拉菜单
   return (
     <div className="relative">
       <button
         ref={avatarRef}
         onClick={handleAvatarClick}
         className="flex items-center justify-center w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden transition-all duration-300 hover:ring-2 hover:ring-blue-500 hover:ring-offset-2 dark:hover:ring-offset-gray-800"
-        aria-label="用户菜单"
-        title={getDisplayName()}
+        aria-label={isAuthenticated ? "用户菜单" : "登录"}
+        title={isAuthenticated ? getDisplayName() : "点击登录"}
       >
-        {getAvatarUrl() ? (
-          <img
-            src={getAvatarUrl()}
-            alt={getDisplayName()}
-            className="w-full h-full object-cover"
-            onError={(e) => {
-              e.target.style.display = 'none';
-              e.target.nextSibling.style.display = 'flex';
-            }}
-          />
-        ) : null}
-        <div
-          className="w-full h-full flex items-center justify-center text-gray-700 dark:text-gray-300"
-          style={{ display: getAvatarUrl() ? 'none' : 'flex' }}
-        >
-          <User className="h-5 w-5" />
-        </div>
+        {isAuthenticated ? (
+          // 已认证状态：显示头像或用户图标
+          <>
+            {getAvatarUrl() ? (
+              <img
+                src={getAvatarUrl()}
+                alt={getDisplayName()}
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  e.target.style.display = 'none';
+                  e.target.nextSibling.style.display = 'flex';
+                }}
+              />
+            ) : null}
+            <div
+              className="w-full h-full flex items-center justify-center text-gray-700 dark:text-gray-300"
+              style={{ display: getAvatarUrl() ? 'none' : 'flex' }}
+            >
+              <User className="h-5 w-5" />
+            </div>
+          </>
+        ) : (
+          // 未认证状态：显示登录图标
+          <LogIn className="h-5 w-5 text-gray-700 dark:text-gray-300" />
+        )}
       </button>
 
       {/* Beta badge */}
@@ -121,8 +117,8 @@ const UserAvatar = ({ onOpenSettings }) => {
         </Badge>
       )}
 
-      {/* 用户下拉菜单 */}
-      {isDropdownOpen && (
+      {/* 用户下拉菜单 - 只有已认证时才显示 */}
+      {isAuthenticated && isDropdownOpen && (
         <div
           ref={dropdownRef}
           className="absolute bottom-full left-0 mb-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-2 z-50"
@@ -154,7 +150,7 @@ const UserAvatar = ({ onOpenSettings }) => {
                   {getDisplayName()}
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400 break-words">
-                  {user?.email || (requiresAuth && isAuthenticated ? "密码认证" : "无需认证")}
+                  {requiresAuth && isAuthenticated ? "密码认证" : "无需认证"}
                 </p>
               </div>
             </div>

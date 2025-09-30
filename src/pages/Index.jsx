@@ -15,6 +15,7 @@ import MusicModal from '@/components/MusicModal';
 import MiniMusicPlayer from '@/components/MiniMusicPlayer';
 import MusicSearchCard from '@/components/MusicSearchCard';
 import { useSettings } from '@/context/SettingsContext';
+import { usePasswordAuth } from '@/context/PasswordAuthContext';
 import { addDeletedMemoTombstone } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -73,7 +74,8 @@ import { toast } from 'sonner';
   const memosContainerRef = useRef(null);
 
   // Context
-  const { backgroundConfig, updateBackgroundConfig, aiConfig, keyboardShortcuts, musicConfig } = useSettings();
+  const { backgroundConfig, updateBackgroundConfig, aiConfig, keyboardShortcuts, musicConfig, _scheduleCloudSync } = useSettings();
+  const { isAuthenticated } = usePasswordAuth();
   const [currentRandomBgUrl, setCurrentRandomBgUrl] = useState('');
 
   // 临时：如果没有音乐 URL，可使用浏览器可播放的示例音频占位（需用户在设置里替换真实地址）
@@ -258,6 +260,7 @@ import { toast } from 'sonner';
       updatedAt: memo.updatedAt || memo.lastModified || new Date().toISOString(),
       backlinks: Array.isArray(memo.backlinks) ? memo.backlinks : [],
       audioClips: Array.isArray(memo.audioClips) ? memo.audioClips : [],
+      is_public: typeof memo.is_public === 'boolean' ? memo.is_public : false, // 为旧memo设置默认值
       // 画布位置：优先使用 memo 自身保存的，退回到 canvasState.memoPositions
       canvasX: (typeof memo.canvasX === 'number' ? memo.canvasX : (memoPositions[memo.id]?.x)),
       canvasY: (typeof memo.canvasY === 'number' ? memo.canvasY : (memoPositions[memo.id]?.y))
@@ -346,6 +349,7 @@ import { toast } from 'sonner';
             updatedAt: memo.updatedAt || memo.lastModified || new Date().toISOString(),
             backlinks: Array.isArray(memo.backlinks) ? memo.backlinks : [],
             audioClips: Array.isArray(memo.audioClips) ? memo.audioClips : [],
+            is_public: typeof memo.is_public === 'boolean' ? memo.is_public : false, // 为旧memo设置默认值
             canvasX: (typeof memo.canvasX === 'number' ? memo.canvasX : (memoPositions[memo.id]?.x)),
             canvasY: (typeof memo.canvasY === 'number' ? memo.canvasY : (memoPositions[memo.id]?.y))
           }));
@@ -404,12 +408,12 @@ import { toast } from 'sonner';
     } catch {}
   }, [memos, pinnedMemos]);
 
-  // 保存数据到localStorage
+  // 保存数据到localStorage - 优化：减少不必要的同步触发
   useEffect(() => {
     localStorage.setItem('memos', JSON.stringify(memos));
     localStorage.setItem('pinnedMemos', JSON.stringify(pinnedMemos));
-  // 通知全局数据变更
-  try { window.dispatchEvent(new CustomEvent('app:dataChanged', { detail: { part: 'memos' } })); } catch {}
+    // 🔧 只在数据真正变化时通知，避免频繁同步导致冲突
+    // 去掉自动触发，改为在关键操作时手动触发
   }, [memos, pinnedMemos]);
 
   // 保存侧栏固定状态到localStorage - 画布模式下不保存
@@ -451,7 +455,7 @@ import { toast } from 'sonner';
   }, []);
 
   // 添加新memo
-  const addMemo = () => {
+  const addMemo = async () => {
     if (newMemo.trim() === '') return;
 
     const extractedTags = [...newMemo.matchAll(/(?:^|\s)#([^\s#][\u4e00-\u9fa5a-zA-Z0-9_\/]*)/g)]
@@ -470,7 +474,8 @@ import { toast } from 'sonner';
       timestamp: nowIso,
       lastModified: nowIso,
       backlinks: Array.isArray(pendingNewBacklinks) ? pendingNewBacklinks : [],
-      audioClips: Array.isArray(pendingNewAudioClips) ? pendingNewAudioClips : []
+      audioClips: Array.isArray(pendingNewAudioClips) ? pendingNewAudioClips : [],
+      is_public: false // 默认为私有
     };
 
     // 更新现有 memos 与 pinnedMemos，将新 memoId 写入被选目标的 backlinks（双向）
@@ -479,14 +484,33 @@ import { toast } from 'sonner';
         ? { ...m, backlinks: Array.from(new Set([...(Array.isArray(m.backlinks) ? m.backlinks : []), newId])), updatedAt: nowIso }
         : m
     ));
-    const updatedMemos = addLink(memos);
+    const updatedMemos = [newMemoObj, ...addLink(memos)];
     const updatedPinned = addLink(pinnedMemos);
 
-    setMemos([newMemoObj, ...updatedMemos]);
+    // 立即更新state和localStorage
+    setMemos(updatedMemos);
     setPinnedMemos(updatedPinned);
+    localStorage.setItem('memos', JSON.stringify(updatedMemos));
+    localStorage.setItem('pinnedMemos', JSON.stringify(updatedPinned));
+
     setNewMemo('');
     setPendingNewBacklinks([]);
     setPendingNewAudioClips([]);
+
+    // 🔧 重要：立即触发同步，确保新memo尽快上传到D1
+    if (isAuthenticated && _scheduleCloudSync) {
+      try {
+        _scheduleCloudSync('memo-add');
+      } catch (error) {
+        console.warn('新增memo立即同步失败:', error);
+      }
+    }
+
+    try {
+      window.dispatchEvent(new CustomEvent('app:dataChanged', {
+        detail: { part: 'memo.add', priority: 'high', id: newId }
+      }));
+    } catch {}
   };
 
   // 更新热力图数据
@@ -495,34 +519,45 @@ import { toast } from 'sonner';
       const data = [];
       const today = new Date();
       const memoCountByDate = {};
-      
-      [...memos, ...pinnedMemos].forEach(memo => {
+
+      // 获取要统计的memo：认证用户统计全部，游客只统计公开memo
+      let memosToCount = [...memos, ...pinnedMemos];
+      if (!isAuthenticated) {
+        memosToCount = memosToCount.filter(memo => memo.is_public);
+      }
+
+      memosToCount.forEach(memo => {
         const createdAt = memo.createdAt || memo.timestamp || new Date().toISOString();
         const date = createdAt.split('T')[0];
         memoCountByDate[date] = (memoCountByDate[date] || 0) + 1;
       });
-      
+
       for (let i = 0; i < 365; i++) {
         const date = new Date(today);
         date.setDate(today.getDate() - i);
         const dateStr = date.toISOString().split('T')[0];
-        
+
         data.push({
           date: dateStr,
           count: memoCountByDate[dateStr] || 0
         });
       }
-      
+
       return data;
     };
-    
-    setHeatmapData(generateHeatmapData());
-  }, [memos, pinnedMemos]);
 
-  // 统一筛选：标签 / 日期 / 搜索
+    setHeatmapData(generateHeatmapData());
+  }, [memos, pinnedMemos, isAuthenticated]); // 添加isAuthenticated依赖
+
+  // 统一筛选：标签 / 日期 / 搜索 / 认证状态
   useEffect(() => {
     // 1) 基础：采用置顶 + 普通的并集，优先显示置顶（作为回退列表）
     let base = [...pinnedMemos, ...memos];
+
+    // 未登录用户只能看到公开的memo
+    if (!isAuthenticated) {
+      base = base.filter(memo => memo.is_public);
+    }
 
     if (activeTag) {
       base = base.filter(memo => {
@@ -551,20 +586,58 @@ import { toast } from 'sonner';
         return contentHit || tagsHit;
       });
 
-      // 如果没有任何命中，则保持 base（认为是“搜索歌曲”场景，memos 列表不变）
+      // 如果没有任何命中，则保持 base（认为是"搜索歌曲"场景，memos 列表不变）
       setFilteredMemos(searched.length > 0 ? searched : base);
       return;
     }
 
     // 无关键词，直接使用 base
     setFilteredMemos(base);
-  }, [memos, pinnedMemos, activeTag, activeDate, searchQuery]);
+  }, [memos, pinnedMemos, activeTag, activeDate, searchQuery, isAuthenticated]);
 
   // 处理菜单操作
   const handleMenuAction = (e, memoId, action) => {
     e.stopPropagation();
 
     switch (action) {
+      case 'toggle-public':
+        // 切换公开状态
+        const updateMemoPublicStatus = (list) => list.map(memo =>
+          memo.id === memoId
+            ? { ...memo, is_public: !memo.is_public, updatedAt: new Date().toISOString() }
+            : memo
+        );
+        const updatedMemos = updateMemoPublicStatus(memos);
+        const updatedPinnedMemos = updateMemoPublicStatus(pinnedMemos);
+
+        setMemos(updatedMemos);
+        setPinnedMemos(updatedPinnedMemos);
+
+        // 立即保存到localStorage以确保持久化
+        localStorage.setItem('memos', JSON.stringify(updatedMemos));
+        localStorage.setItem('pinnedMemos', JSON.stringify(updatedPinnedMemos));
+
+        // 提示用户操作成功
+        const targetMemo = [...updatedMemos, ...updatedPinnedMemos].find(m => m.id === memoId);
+        if (targetMemo) {
+          toast.success(targetMemo.is_public ? '已设为公开' : '已设为私有');
+        }
+
+        // 🔧 触发立即同步以保存公开状态变更
+        if (isAuthenticated && _scheduleCloudSync) {
+          try {
+            _scheduleCloudSync('public-status-change');
+          } catch (error) {
+            console.warn('立即同步失败:', error);
+          }
+        }
+
+        try {
+          window.dispatchEvent(new CustomEvent('app:dataChanged', {
+            detail: { part: 'memo.update', priority: 'high', id: memoId }
+          }));
+        } catch {}
+        break;
   case 'pin':
         const memoToPin = memos.find(memo => memo.id === memoId);
         if (memoToPin && !pinnedMemos.some(p => p.id === memoId)) {
@@ -1278,8 +1351,8 @@ import { toast } from 'sonner';
         {/* 左侧热力图区域 */}
         <LeftSidebar
           heatmapData={heatmapData}
-          memos={memos}
-          pinnedMemos={pinnedMemos}
+          memos={isAuthenticated ? memos : memos.filter(memo => memo.is_public)}
+          pinnedMemos={isAuthenticated ? pinnedMemos : pinnedMemos.filter(memo => memo.is_public)}
           isLeftSidebarHidden={isLeftSidebarHidden}
           setIsLeftSidebarHidden={setIsLeftSidebarHidden}
           isLeftSidebarPinned={isLeftSidebarPinned}
@@ -1294,6 +1367,7 @@ import { toast } from 'sonner';
           onOpenDailyReview={() => setIsDailyReviewOpen(true)}
           showFavoriteRandomButton={backgroundConfig.useRandom && !backgroundConfig.imageUrl}
           onFavoriteRandomBackground={handleFavoriteRandomBackground}
+          isAuthenticated={isAuthenticated}
         />
 
         {/* 中央主内容区 */}
@@ -1369,6 +1443,8 @@ import { toast } from 'sonner';
                 setMusicSearchKeyword(q);
                 setMusicSearchOpen(true);
               }}
+              // 认证状态
+              isAuthenticated={isAuthenticated}
           />
         )}
 
@@ -1393,11 +1469,12 @@ import { toast } from 'sonner';
         isOpen={isMobileSidebarOpen}
         onClose={() => setIsMobileSidebarOpen(false)}
         heatmapData={heatmapData}
-        memos={[...memos, ...pinnedMemos]}
+        memos={isAuthenticated ? [...memos, ...pinnedMemos] : [...memos, ...pinnedMemos].filter(memo => memo.is_public)}
         activeTag={activeTag}
         setActiveTag={(tag) => { setActiveTag(tag); setActiveDate(null); }}
         onSettingsOpen={() => setIsSettingsOpen(true)}
         onDateClick={handleDateClick}
+        isAuthenticated={isAuthenticated}
   onOpenMusic={() => { if (musicConfig?.enabled) setMusicModal((m) => ({ ...m, isOpen: true })); }}
       />
 
@@ -1463,8 +1540,8 @@ import { toast } from 'sonner';
         </>
       )}
 
-      {/* AI按钮 - 在画布模式下不显示 */}
-      {!isCanvasMode && (
+      {/* AI按钮 - 在画布模式下不显示，未登录用户也不显示 */}
+      {!isCanvasMode && isAuthenticated && (
         <AIButton
           isSettingsOpen={isSettingsOpen}
           isShareDialogOpen={isShareDialogOpen}
